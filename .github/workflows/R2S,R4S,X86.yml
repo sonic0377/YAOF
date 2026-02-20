@@ -1,5 +1,5 @@
 # Reusable workflow for building OpenWrt firmware
-name: OpenWrt-Matrix
+name: R2S,R4S,X86
 
 on:
   workflow_call:
