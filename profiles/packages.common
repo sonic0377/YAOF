@@ -58,6 +58,7 @@ luci-app-zerotier
 luci-app-upnp
 luci-app-3cat
 luci-app-airconnect
+ddns-go
 luci-app-ddns-go
 
 # System & Filesystem
