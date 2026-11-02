@@ -79,8 +79,7 @@ esac
 
 # =============================================================================
 # 定义软件源与工具 URL (支持通过环境变量覆盖)
-# 注意: repositories 文件仅接受纯 URL 或完整索引文件 URL,
-#       严禁使用 src/gz 前缀 (apk 会拒绝读取整个文件)
+# 优先级设计: QiuSimons 自定义源 > OpenWrt 官方源 > ImmortalWrt (兜底)
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
@@ -88,7 +87,7 @@ CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuS
 
 IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
 IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-packages luci}"
-KEYRING_API="${KEYRING_API:-https://api.github.com/repos/immortalwrt/keyring/contents/apk}"
+KEYRING_GIT="${KEYRING_GIT:-https://github.com/immortalwrt/keyring.git}"
 # =============================================================================
 
 WORK_DIR="${ROOT_DIR}/build_${TARGET}_${SUBTARGET}_${PROFILE}"
@@ -109,7 +108,6 @@ fi
 
 # -----------------------------------------------------------------------------
 # 探测 ImmortalWrt 索引文件的真实位置, 返回完整索引 URL
-# (apk 25.12 对完整索引文件 URL 直接下载, 不做任何架构路径拼接)
 # -----------------------------------------------------------------------------
 probe_immortalwrt_index() {
     local feed="$1"
@@ -143,32 +141,33 @@ mkdir -p "${IB_DIR}/keys"
 log "Fetching custom feed signing key: ${CUSTOM_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CUSTOM_KEY_URL" -o "${IB_DIR}/keys/custom-feed.rsa.pub" || die "Failed to download custom feed signing key"
 
-# --- 从 ImmortalWrt 官方 keyring 仓库获取全部 APK 公钥 ---
-log "Fetching ImmortalWrt signing keys from official keyring (apk/)..."
+# --- 通过浅克隆获取 ImmortalWrt 全部 APK 公钥 (不依赖 GitHub API 配额) ---
+log "Fetching ImmortalWrt signing keys from official keyring repository..."
+KEYRING_DIR="${WORK_DIR}/immortalwrt-keyring"
+rm -rf "$KEYRING_DIR"
 IMM_KEY_FILES=""
-if key_urls="$(curl -fsSL --retry 2 --retry-delay 1 "$KEYRING_API" | jq -r '.[]? | select(.name|endswith(".pub")) | .download_url' 2>/dev/null)" && [ -n "$key_urls" ]; then
-    while IFS= read -r kurl; do
-        [ -n "$kurl" ] || continue
-        kname="$(basename "$kurl")"
-        if curl -fsSL --retry 2 --retry-delay 1 -o "${IB_DIR}/keys/${kname}" "$kurl"; then
-            log "Installed ImmortalWrt signing key: ${kname}"
-            IMM_KEY_FILES="${IMM_KEY_FILES}${IMM_KEY_FILES:+ }${kname}"
-        else
-            rm -f "${IB_DIR}/keys/${kname}"
-        fi
-    done <<< "$key_urls"
+if git clone --depth 1 --quiet "$KEYRING_GIT" "$KEYRING_DIR" 2>/dev/null; then
+    for keyfile in "${KEYRING_DIR}/apk/"*.pub; do
+        [ -e "$keyfile" ] || continue
+        kname="$(basename "$keyfile")"
+        cp -f "$keyfile" "${IB_DIR}/keys/${kname}"
+        log "Installed ImmortalWrt signing key: ${kname}"
+        IMM_KEY_FILES="${IMM_KEY_FILES}${IMM_KEY_FILES:+ }${kname}"
+    done
+    rm -rf "$KEYRING_DIR"
 else
-    log "WARNING: Unable to list ImmortalWrt keyring via GitHub API; ImmortalWrt indexes will remain UNTRUSTED"
+    log "WARNING: Failed to clone ImmortalWrt keyring; ImmortalWrt indexes will remain UNTRUSTED"
 fi
 
+# 自定义源置于首行 (最高优先级)
 if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
     sed -i "1i ${CUSTOM_FEED_URL}" "${IB_DIR}/repositories"
 fi
 
-# 仅写入探测成功的完整索引 URL (纯文本行, 无 src/gz, 无尾部斜杠)
+# ImmortalWrt 源追加至末行 (最低优先级, 仅作兜底: 仅当其他源均无此包时才使用)
 for repo_url in $IMMORTALWRT_REPO_URLS; do
     if ! grep -qxF "$repo_url" "${IB_DIR}/repositories"; then
-        sed -i "1i ${repo_url}" "${IB_DIR}/repositories"
+        printf '%s\n' "$repo_url" >> "${IB_DIR}/repositories"
     fi
 done
 
@@ -189,6 +188,8 @@ curl -fsSL --retry 3 --retry-delay 2 "$CLEANUP_SCRIPT_URL" -o "${OVERLAY_DIR}/us
 chmod +x "${OVERLAY_DIR}/usr/bin/clean-overlay"
 
 # 配置 APK 密钥和软件源列表以供最终固件使用
+# (repositories.d 按文件名字母序加载: customfeeds < distfeeds < immortalwrt-feeds,
+#  与构建期优先级保持一致)
 mkdir -p "${OVERLAY_DIR}/etc/apk/keys"
 cp -af "${IB_DIR}/keys/custom-feed.rsa.pub" "${OVERLAY_DIR}/etc/apk/keys/"
 for kname in $IMM_KEY_FILES; do
@@ -220,6 +221,7 @@ PACKAGES="$(load_packages "${ROOT_DIR}/profiles/packages.common") $(load_package
 BUILD_LOG="${WORK_DIR}/build.log"
 SKIPPED_PACKAGES=""
 MAX_SKIP_ROUNDS=5
+MAX_BUILD_RETRIES=2
 
 build_firmware() {
     local packages="$1"
@@ -240,6 +242,7 @@ missing_packages_from_log() {
 
 log "Assembling firmware for ${PROFILE} (${VERSION})..."
 skip_round=0
+retry_round=0
 while :; do
     if build_firmware "$PACKAGES"; then
         break
@@ -257,6 +260,13 @@ while :; do
     done
 
     if [ -z "$skipped" ]; then
+        # 未检测到缺失包: 视为瞬时故障 (如 CDN 404/断流), 有限次重试
+        retry_round=$((retry_round + 1))
+        if [ "$retry_round" -le "$MAX_BUILD_RETRIES" ]; then
+            log "WARNING: Build failed without missing packages (transient error?). Retry ${retry_round}/${MAX_BUILD_RETRIES}..."
+            sleep 5
+            continue
+        fi
         die "Firmware build failed (no unavailable package detected). See ${BUILD_LOG}"
     fi
 
