@@ -79,7 +79,7 @@ esac
 
 # =============================================================================
 # 定义软件源与工具 URL (支持通过环境变量覆盖)
-# 注意: repositories 文件仅接受"纯 URL"或"完整索引文件 URL",
+# 注意: repositories 文件仅接受纯 URL 或完整索引文件 URL,
 #       严禁使用 src/gz 前缀 (apk 会拒绝读取整个文件)
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
@@ -88,7 +88,7 @@ CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuS
 
 IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
 IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-packages luci}"
-IMMORTALWRT_KEY_URL="${IMMORTALWRT_KEY_URL:-https://raw.githubusercontent.com/immortalwrt/keyring/master/immortalwrt.pub}"
+KEYRING_API="${KEYRING_API:-https://api.github.com/repos/immortalwrt/keyring/contents/apk}"
 # =============================================================================
 
 WORK_DIR="${ROOT_DIR}/build_${TARGET}_${SUBTARGET}_${PROFILE}"
@@ -108,8 +108,8 @@ if [ ! -d "$IB_DIR" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 探测 ImmortalWrt 索引文件的真实位置, 返回完整索引 URL (与 QiuSimons 源同一模式)
-# apk 25.12 对"完整索引文件 URL"直接下载, 不做任何架构路径拼接
+# 探测 ImmortalWrt 索引文件的真实位置, 返回完整索引 URL
+# (apk 25.12 对完整索引文件 URL 直接下载, 不做任何架构路径拼接)
 # -----------------------------------------------------------------------------
 probe_immortalwrt_index() {
     local feed="$1"
@@ -143,12 +143,27 @@ mkdir -p "${IB_DIR}/keys"
 log "Fetching custom feed signing key: ${CUSTOM_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CUSTOM_KEY_URL" -o "${IB_DIR}/keys/custom-feed.rsa.pub" || die "Failed to download custom feed signing key"
 
+# --- 从 ImmortalWrt 官方 keyring 仓库获取全部 APK 公钥 ---
+log "Fetching ImmortalWrt signing keys from official keyring (apk/)..."
+IMM_KEY_FILES=""
+if key_urls="$(curl -fsSL --retry 2 --retry-delay 1 "$KEYRING_API" | jq -r '.[]? | select(.name|endswith(".pub")) | .download_url' 2>/dev/null)" && [ -n "$key_urls" ]; then
+    while IFS= read -r kurl; do
+        [ -n "$kurl" ] || continue
+        kname="$(basename "$kurl")"
+        if curl -fsSL --retry 2 --retry-delay 1 -o "${IB_DIR}/keys/${kname}" "$kurl"; then
+            log "Installed ImmortalWrt signing key: ${kname}"
+            IMM_KEY_FILES="${IMM_KEY_FILES}${IMM_KEY_FILES:+ }${kname}"
+        else
+            rm -f "${IB_DIR}/keys/${kname}"
+        fi
+    done <<< "$key_urls"
+else
+    log "WARNING: Unable to list ImmortalWrt keyring via GitHub API; ImmortalWrt indexes will remain UNTRUSTED"
+fi
+
 if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
     sed -i "1i ${CUSTOM_FEED_URL}" "${IB_DIR}/repositories"
 fi
-
-log "Fetching ImmortalWrt feed signing key: ${IMMORTALWRT_KEY_URL}"
-curl -fsSL --retry 3 --retry-delay 2 "$IMMORTALWRT_KEY_URL" -o "${IB_DIR}/keys/immortalwrt.pub" || log "WARNING: Failed to download ImmortalWrt signing key"
 
 # 仅写入探测成功的完整索引 URL (纯文本行, 无 src/gz, 无尾部斜杠)
 for repo_url in $IMMORTALWRT_REPO_URLS; do
@@ -173,11 +188,12 @@ log "Fetching cleanup utility: ${CLEANUP_SCRIPT_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CLEANUP_SCRIPT_URL" -o "${OVERLAY_DIR}/usr/bin/clean-overlay" || die "Failed to download cleanup utility"
 chmod +x "${OVERLAY_DIR}/usr/bin/clean-overlay"
 
+# 配置 APK 密钥和软件源列表以供最终固件使用
 mkdir -p "${OVERLAY_DIR}/etc/apk/keys"
 cp -af "${IB_DIR}/keys/custom-feed.rsa.pub" "${OVERLAY_DIR}/etc/apk/keys/"
-if [ -f "${IB_DIR}/keys/immortalwrt.pub" ]; then
-    cp -af "${IB_DIR}/keys/immortalwrt.pub" "${OVERLAY_DIR}/etc/apk/keys/"
-fi
+for kname in $IMM_KEY_FILES; do
+    cp -af "${IB_DIR}/keys/${kname}" "${OVERLAY_DIR}/etc/apk/keys/"
+done
 
 mkdir -p "${OVERLAY_DIR}/etc/apk/repositories.d"
 echo "$CUSTOM_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/customfeeds.list"
