@@ -31,6 +31,7 @@ luci-i18n-3cat-zh-cn
 luci-i18n-airconnect-zh-cn
 luci-i18n-filemanager-zh-cn
 luci-i18n-partexp-zh-cn
+luci-i18n-ddns-go-zh-cn
 
 # Proxy & eBPF
 luci-app-homeproxy
@@ -54,11 +55,10 @@ luci-app-wrtbwmon
 luci-proto-wireguard
 qrencode
 luci-app-zerotier
-luci-app-ddns
-ddns-scripts-cloudflare
 luci-app-upnp
 luci-app-3cat
 luci-app-airconnect
+luci-app-ddns-go
 
 # System & Filesystem
 ethtool
