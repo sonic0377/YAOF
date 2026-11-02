@@ -39,6 +39,8 @@ luci-app-honk
 luci-app-dae
 vmlinux-btf
 luci-app-flowcone
+luci-app-openclash
+luci-app-mosdns
 
 # Network & Routing
 luci-app-sqm
@@ -46,6 +48,7 @@ luci-app-natmapt
 luci-app-bandix
 luci-app-arpbind
 luci-app-ap-modem
+luci-app-wrtbwmon
 
 # VPN & Services
 luci-proto-wireguard
@@ -64,6 +67,7 @@ kmod-tcp-bbr
 zram-swap
 luci-app-filemanager
 luci-app-partexp
+luci-app-wechatpush
 
 # USB Tethering
 kmod-usb-net-rndis
