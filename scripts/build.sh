@@ -78,16 +78,19 @@ case "$TARGET" in
 esac
 
 # =============================================================================
-# 定义软件源与工具 URL (支持通过环境变量覆盖)
-# 优先级设计: QiuSimons 自定义源 > OpenWrt 官方源 > ImmortalWrt (兜底)
+# 软件源定义
+# 设计原则:
+#   1) 构建期 repositories 仅包含官方源 + QiuSimons 受信源;
+#   2) ImmortalWrt 仅作为"兜底下载源": 当包在受信源中缺失时,
+#      直接下载 .apk 注入 ImageBuilder 本地受信包目录;
+#   3) 不依赖 ImmortalWrt 索引签名信任链, 彻底规避 UNTRUSTED 问题。
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
 IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
-IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-packages luci}"
-KEYRING_GIT="${KEYRING_GIT:-https://github.com/immortalwrt/keyring.git}"
+IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-luci packages}"
 # =============================================================================
 
 WORK_DIR="${ROOT_DIR}/build_${TARGET}_${SUBTARGET}_${PROFILE}"
@@ -107,69 +110,57 @@ if [ ! -d "$IB_DIR" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 探测 ImmortalWrt 索引文件的真实位置, 返回完整索引 URL
-# -----------------------------------------------------------------------------
-probe_immortalwrt_index() {
-    local feed="$1"
-    local candidate
-    for candidate in \
-        "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" \
-        "${IMMORTALWRT_BASE_URL}/${feed}/APKINDEX.tar.gz"; do
-        if curl -fsSL --retry 2 --retry-delay 1 -o /dev/null "$candidate"; then
-            echo "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
-IMMORTALWRT_REPO_URLS=""
-for feed in $IMMORTALWRT_FEEDS; do
-    if idx_url="$(probe_immortalwrt_index "$feed")"; then
-        log "ImmortalWrt feed '${feed}' resolved to index: ${idx_url}"
-        IMMORTALWRT_REPO_URLS="${IMMORTALWRT_REPO_URLS}${IMMORTALWRT_REPO_URLS:+ }${idx_url}"
-    else
-        log "WARNING: ImmortalWrt feed '${feed}' index not found under ${IMMORTALWRT_BASE_URL}/${feed}/ ; skipping this feed"
-    fi
-done
-
-# -----------------------------------------------------------------------------
-# 配置 ImageBuilder 的软件源与密钥
+# ImageBuilder 软件源: 仅注入受信自定义源 (ImmortalWrt 不写入 repositories)
 # -----------------------------------------------------------------------------
 mkdir -p "${IB_DIR}/keys"
 
 log "Fetching custom feed signing key: ${CUSTOM_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CUSTOM_KEY_URL" -o "${IB_DIR}/keys/custom-feed.rsa.pub" || die "Failed to download custom feed signing key"
 
-# --- 通过浅克隆获取 ImmortalWrt 全部 APK 公钥 (不依赖 GitHub API 配额) ---
-log "Fetching ImmortalWrt signing keys from official keyring repository..."
-KEYRING_DIR="${WORK_DIR}/immortalwrt-keyring"
-rm -rf "$KEYRING_DIR"
-IMM_KEY_FILES=""
-if git clone --depth 1 --quiet "$KEYRING_GIT" "$KEYRING_DIR" 2>/dev/null; then
-    for keyfile in "${KEYRING_DIR}/apk/"*.pub; do
-        [ -e "$keyfile" ] || continue
-        kname="$(basename "$keyfile")"
-        cp -f "$keyfile" "${IB_DIR}/keys/${kname}"
-        log "Installed ImmortalWrt signing key: ${kname}"
-        IMM_KEY_FILES="${IMM_KEY_FILES}${IMM_KEY_FILES:+ }${kname}"
-    done
-    rm -rf "$KEYRING_DIR"
-else
-    log "WARNING: Failed to clone ImmortalWrt keyring; ImmortalWrt indexes will remain UNTRUSTED"
-fi
-
-# 自定义源置于首行 (最高优先级)
 if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
     sed -i "1i ${CUSTOM_FEED_URL}" "${IB_DIR}/repositories"
 fi
 
-# ImmortalWrt 源追加至末行 (最低优先级, 仅作兜底: 仅当其他源均无此包时才使用)
-for repo_url in $IMMORTALWRT_REPO_URLS; do
-    if ! grep -qxF "$repo_url" "${IB_DIR}/repositories"; then
-        printf '%s\n' "$repo_url" >> "${IB_DIR}/repositories"
+# -----------------------------------------------------------------------------
+# ImmortalWrt 兜底下载机制 (普通 HTTP, 不经过 apk 信任模型)
+# -----------------------------------------------------------------------------
+IMM_INDEX_CACHE="${WORK_DIR}/imm-index-cache"
+IMM_KEYS_DIR="${WORK_DIR}/imm-keys"
+mkdir -p "$IMM_INDEX_CACHE" "$IMM_KEYS_DIR"
+
+imm_index() {
+    local feed="$1"
+    local f="${IMM_INDEX_CACHE}/${feed}.adb"
+    if [ ! -s "$f" ]; then
+        curl -fsSL --retry 2 --retry-delay 1 -o "$f" "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" || { rm -f "$f"; return 1; }
+        # 从索引压缩包中提取签名公钥, 供最终固件信任该源使用
+        local member
+        for member in $(tar -tzf "$f" 2>/dev/null | grep -E '^\.SIGN.*\.(pub|pem)$' || true); do
+            tar -xzOf "$f" "$member" > "${IMM_KEYS_DIR}/$(basename "$member")" 2>/dev/null || true
+        done
     fi
-done
+    echo "$f"
+}
+
+imm_fetch_pkg() {
+    local pkg="$1"
+    local feed adb member ver file
+    for feed in $IMMORTALWRT_FEEDS; do
+        adb="$(imm_index "$feed" || true)"
+        [ -n "$adb" ] || continue
+        member="$(tar -tzf "$adb" 2>/dev/null | grep -v '^\.SIGN' | head -n 1 || true)"
+        [ -n "$member" ] || continue
+        ver="$(tar -xzOf "$adb" "$member" 2>/dev/null | awk -v p="$pkg" '$0=="P:"p{f=1;next} f&&/^V:/{print substr($0,3); exit} f&&/^P:/{f=0}')"
+        [ -n "$ver" ] || continue
+        file="${pkg}-${ver}.apk"
+        if curl -fsSL --retry 2 --retry-delay 1 -o "${IB_DIR}/packages/${file}" "${IMMORTALWRT_BASE_URL}/${feed}/${file}"; then
+            log "Downloaded ${file} from ImmortalWrt '${feed}' feed into local repository"
+            return 0
+        fi
+        rm -f "${IB_DIR}/packages/${file}"
+    done
+    return 1
+}
 
 # -----------------------------------------------------------------------------
 # 配置目标固件的 Overlay 目录
@@ -187,24 +178,11 @@ log "Fetching cleanup utility: ${CLEANUP_SCRIPT_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CLEANUP_SCRIPT_URL" -o "${OVERLAY_DIR}/usr/bin/clean-overlay" || die "Failed to download cleanup utility"
 chmod +x "${OVERLAY_DIR}/usr/bin/clean-overlay"
 
-# 配置 APK 密钥和软件源列表以供最终固件使用
-# (repositories.d 按文件名字母序加载: customfeeds < distfeeds < immortalwrt-feeds,
-#  与构建期优先级保持一致)
 mkdir -p "${OVERLAY_DIR}/etc/apk/keys"
 cp -af "${IB_DIR}/keys/custom-feed.rsa.pub" "${OVERLAY_DIR}/etc/apk/keys/"
-for kname in $IMM_KEY_FILES; do
-    cp -af "${IB_DIR}/keys/${kname}" "${OVERLAY_DIR}/etc/apk/keys/"
-done
 
 mkdir -p "${OVERLAY_DIR}/etc/apk/repositories.d"
 echo "$CUSTOM_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/customfeeds.list"
-
-if [ -n "$IMMORTALWRT_REPO_URLS" ]; then
-    : > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
-    for repo_url in $IMMORTALWRT_REPO_URLS; do
-        echo "$repo_url" >> "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
-    done
-fi
 
 if [ "$TARGET" = "rockchip" ]; then
     mkdir -p "${OVERLAY_DIR}/etc/apk"
@@ -222,6 +200,7 @@ BUILD_LOG="${WORK_DIR}/build.log"
 SKIPPED_PACKAGES=""
 MAX_SKIP_ROUNDS=5
 MAX_BUILD_RETRIES=2
+MAX_FETCH_ROUNDS=3
 
 build_firmware() {
     local packages="$1"
@@ -243,12 +222,29 @@ missing_packages_from_log() {
 log "Assembling firmware for ${PROFILE} (${VERSION})..."
 skip_round=0
 retry_round=0
+fetch_round=0
 while :; do
     if build_firmware "$PACKAGES"; then
         break
     fi
 
     missing="$(missing_packages_from_log "$BUILD_LOG" | sort -u)"
+
+    # 兜底: 缺失包尝试从 ImmortalWrt 直接下载注入本地受信仓库
+    if [ -n "$missing" ] && [ "$fetch_round" -lt "$MAX_FETCH_ROUNDS" ]; then
+        fetched_any=0
+        for pkg in $missing; do
+            if imm_fetch_pkg "$pkg"; then
+                fetched_any=1
+            fi
+        done
+        if [ "$fetched_any" -eq 1 ]; then
+            fetch_round=$((fetch_round + 1))
+            log "Injected ImmortalWrt package(s) into local repository; rebuilding..."
+            continue
+        fi
+    fi
+
     kept=""
     skipped=""
     for pkg in $PACKAGES; do
@@ -260,7 +256,6 @@ while :; do
     done
 
     if [ -z "$skipped" ]; then
-        # 未检测到缺失包: 视为瞬时故障 (如 CDN 404/断流), 有限次重试
         retry_round=$((retry_round + 1))
         if [ "$retry_round" -le "$MAX_BUILD_RETRIES" ]; then
             log "WARNING: Build failed without missing packages (transient error?). Retry ${retry_round}/${MAX_BUILD_RETRIES}..."
@@ -279,6 +274,20 @@ while :; do
     SKIPPED_PACKAGES="${SKIPPED_PACKAGES}${SKIPPED_PACKAGES:+ }${skipped}"
     PACKAGES="$kept"
 done
+
+# 将提取到的 ImmortalWrt 签名公钥与源列表写入固件 (设备端可信任并更新该源)
+for kfile in "${IMM_KEYS_DIR}"/*.pub "${IMM_KEYS_DIR}"/*.pem; do
+    [ -e "$kfile" ] || continue
+    cp -af "$kfile" "${OVERLAY_DIR}/etc/apk/keys/"
+done
+if [ -s "${IMM_INDEX_CACHE}/luci.adb" ] || [ -s "${IMM_INDEX_CACHE}/packages.adb" ]; then
+    : > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
+    for feed in $IMMORTALWRT_FEEDS; do
+        if [ -s "${IMM_INDEX_CACHE}/${feed}.adb" ]; then
+            echo "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" >> "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
+        fi
+    done
+fi
 
 if [ -n "$SKIPPED_PACKAGES" ]; then
     log "WARNING: Firmware built without unavailable package(s): ${SKIPPED_PACKAGES}"
