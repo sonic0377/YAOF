@@ -84,11 +84,10 @@ CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${AR
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
-# 修正：URL 末尾必须加 /，防止 apk 自动追加架构名导致路径错误
-# 例如：.../luci/ -> apk 请求 .../luci/APKINDEX.tar.gz (正确)
-#       .../luci   -> apk 请求 .../luci/x86_64/APKINDEX.tar.gz (错误)
-IMMORTALWRT_PACKAGES_URL="${IMMORTALWRT_PACKAGES_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/packages/}"
-IMMORTALWRT_LUCI_URL="${IMMORTALWRT_LUCI_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/luci/}"
+# ImmortalWrt 源 (注意：由于 apk 架构追加行为，这些源可能无法在 IB 阶段正常工作)
+# 我们仍将其加入 repositories 文件，但主要依赖 Overlay 配置供设备使用
+IMMORTALWRT_PACKAGES_URL="${IMMORTALWRT_PACKAGES_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/packages}"
+IMMORTALWRT_LUCI_URL="${IMMORTALWRT_LUCI_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/luci}"
 IMMORTALWRT_KEY_URL="${IMMORTALWRT_KEY_URL:-https://raw.githubusercontent.com/immortalwrt/keyring/master/immortalwrt.pub}"
 # =============================================================================
 
@@ -116,20 +115,25 @@ mkdir -p "${IB_DIR}/keys"
 log "Fetching custom feed signing key: ${CUSTOM_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CUSTOM_KEY_URL" -o "${IB_DIR}/keys/custom-feed.rsa.pub" || die "Failed to download custom feed signing key"
 
-if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
-    sed -i "1i ${CUSTOM_FEED_URL}" "${IB_DIR}/repositories"
+# 使用 src/gz 格式插入自定义源，确保兼容性
+CUSTOM_REPO_LINE="src/gz custom_feed ${CUSTOM_FEED_URL}"
+if ! grep -qxF "$CUSTOM_REPO_LINE" "${IB_DIR}/repositories"; then
+    sed -i "1i ${CUSTOM_REPO_LINE}" "${IB_DIR}/repositories"
 fi
 
 log "Fetching ImmortalWrt feed signing key: ${IMMORTALWRT_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$IMMORTALWRT_KEY_URL" -o "${IB_DIR}/keys/immortalwrt.pub" || log "WARNING: Failed to download ImmortalWrt signing key"
 
-# 插入 ImmortalWrt 的 packages 和 luci 源
-# 注意：URL 已包含尾部斜杠，确保 apk 不会错误拼接架构名
-if ! grep -qxF "$IMMORTALWRT_PACKAGES_URL" "${IB_DIR}/repositories"; then
-    sed -i "1i ${IMMORTALWRT_PACKAGES_URL}" "${IB_DIR}/repositories"
+# 尝试使用 src/gz 格式插入 ImmortalWrt 源
+# 注意：由于 apk 架构追加行为，这可能在 IB 阶段失败，但我们会继续
+IMM_PACKAGES_REPO="src/gz immortalwrt_packages ${IMMORTALWRT_PACKAGES_URL}"
+IMM_LUCI_REPO="src/gz immortalwrt_luci ${IMMORTALWRT_LUCI_URL}"
+
+if ! grep -qxF "$IMM_PACKAGES_REPO" "${IB_DIR}/repositories"; then
+    sed -i "1i ${IMM_PACKAGES_REPO}" "${IB_DIR}/repositories"
 fi
-if ! grep -qxF "$IMMORTALWRT_LUCI_URL" "${IB_DIR}/repositories"; then
-    sed -i "1i ${IMMORTALWRT_LUCI_URL}" "${IB_DIR}/repositories"
+if ! grep -qxF "$IMM_LUCI_REPO" "${IB_DIR}/repositories"; then
+    sed -i "1i ${IMM_LUCI_REPO}" "${IB_DIR}/repositories"
 fi
 
 # -----------------------------------------------------------------------------
@@ -158,7 +162,7 @@ fi
 mkdir -p "${OVERLAY_DIR}/etc/apk/repositories.d"
 echo "$CUSTOM_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/customfeeds.list"
 
-# 为最终固件配置 ImmortalWrt 源
+# 为最终固件配置 ImmortalWrt 源 (使用纯 URL 格式，不带尾部斜杠)
 cat > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list" <<EOF
 ${IMMORTALWRT_PACKAGES_URL}
 ${IMMORTALWRT_LUCI_URL}
