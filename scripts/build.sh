@@ -80,10 +80,10 @@ esac
 # =============================================================================
 # 软件源定义
 # 设计原则:
-#   1) 构建期 repositories 仅包含官方源 + QiuSimons 受信源;
-#   2) ImmortalWrt 仅作为"兜底下载源": 当包在受信源中缺失时,
-#      直接下载 .apk 注入 ImageBuilder 本地受信包目录;
-#   3) 不依赖 ImmortalWrt 索引签名信任链, 彻底规避 UNTRUSTED 问题。
+#   1) 构建期 repositories 仅含官方源 + QiuSimons 受信源 (避免优先级劫持);
+#   2) ImmortalWrt 仅作兜底: 受信源缺失时, 通过 HTTP 目录列表定位 .apk
+#      并注入 ImageBuilder 本地受信包目录 (不解析索引, 不依赖签名信任链);
+#   3) 所有失败分支均输出日志, 杜绝静默失败。
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
@@ -110,7 +110,7 @@ if [ ! -d "$IB_DIR" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# ImageBuilder 软件源: 仅注入受信自定义源 (ImmortalWrt 不写入 repositories)
+# ImageBuilder 软件源: 仅注入受信自定义源
 # -----------------------------------------------------------------------------
 mkdir -p "${IB_DIR}/keys"
 
@@ -122,42 +122,45 @@ if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
 fi
 
 # -----------------------------------------------------------------------------
-# ImmortalWrt 兜底下载机制 (普通 HTTP, 不经过 apk 信任模型)
+# ImmortalWrt 兜底下载机制 (基于 HTTP 目录列表, 不解析索引文件)
 # -----------------------------------------------------------------------------
-IMM_INDEX_CACHE="${WORK_DIR}/imm-index-cache"
 IMM_KEYS_DIR="${WORK_DIR}/imm-keys"
-mkdir -p "$IMM_INDEX_CACHE" "$IMM_KEYS_DIR"
+mkdir -p "$IMM_KEYS_DIR"
 
-imm_index() {
-    local feed="$1"
-    local f="${IMM_INDEX_CACHE}/${feed}.adb"
-    if [ ! -s "$f" ]; then
-        curl -fsSL --retry 2 --retry-delay 1 -o "$f" "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" || { rm -f "$f"; return 1; }
-        # 从索引压缩包中提取签名公钥, 供最终固件信任该源使用
-        local member
-        for member in $(tar -tzf "$f" 2>/dev/null | grep -E '^\.SIGN.*\.(pub|pem)$' || true); do
-            tar -xzOf "$f" "$member" > "${IMM_KEYS_DIR}/$(basename "$member")" 2>/dev/null || true
+imm_extract_keys() {
+    local apkfile="$1"
+    local member
+    for member in $(tar -tzf "$apkfile" 2>/dev/null | grep -E '^\.SIGN.*\.(pub|pem)$' || true); do
+        tar -xzOf "$apkfile" "$member" > "${IMM_KEYS_DIR}/$(basename "$member")" 2>/dev/null || true
+    done
+    if [ -z "$(ls -A "$IMM_KEYS_DIR" 2>/dev/null || true)" ]; then
+        for member in $(tar -t --zstd -f "$apkfile" 2>/dev/null | grep -E '^\.SIGN.*\.(pub|pem)$' || true); do
+            tar -x --zstd -Of "$apkfile" "$member" > "${IMM_KEYS_DIR}/$(basename "$member")" 2>/dev/null || true
         done
     fi
-    echo "$f"
 }
 
 imm_fetch_pkg() {
     local pkg="$1"
-    local feed adb member ver file
+    local feed listing file
     for feed in $IMMORTALWRT_FEEDS; do
-        adb="$(imm_index "$feed" || true)"
-        [ -n "$adb" ] || continue
-        member="$(tar -tzf "$adb" 2>/dev/null | grep -v '^\.SIGN' | head -n 1 || true)"
-        [ -n "$member" ] || continue
-        ver="$(tar -xzOf "$adb" "$member" 2>/dev/null | awk -v p="$pkg" '$0=="P:"p{f=1;next} f&&/^V:/{print substr($0,3); exit} f&&/^P:/{f=0}')"
-        [ -n "$ver" ] || continue
-        file="${pkg}-${ver}.apk"
+        listing="$(curl -fsSL --retry 2 --retry-delay 1 "${IMMORTALWRT_BASE_URL}/${feed}/" 2>/dev/null || true)"
+        if [ -z "$listing" ]; then
+            log "WARNING: Unable to list ImmortalWrt feed '${feed}' at ${IMMORTALWRT_BASE_URL}/${feed}/"
+            continue
+        fi
+        file="$(printf '%s\n' "$listing" | grep -oE "href=\"${pkg}-[0-9][^\"]*\.apk\"" | head -n 1 | sed 's/^href="//; s/"$//' || true)"
+        if [ -z "$file" ]; then
+            log "WARNING: Package '${pkg}' not found in ImmortalWrt feed '${feed}'"
+            continue
+        fi
         if curl -fsSL --retry 2 --retry-delay 1 -o "${IB_DIR}/packages/${file}" "${IMMORTALWRT_BASE_URL}/${feed}/${file}"; then
             log "Downloaded ${file} from ImmortalWrt '${feed}' feed into local repository"
+            imm_extract_keys "${IB_DIR}/packages/${file}" || true
             return 0
         fi
         rm -f "${IB_DIR}/packages/${file}"
+        log "WARNING: Failed to download ${file} from ImmortalWrt feed '${feed}'"
     done
     return 1
 }
@@ -198,6 +201,7 @@ load_packages() {
 PACKAGES="$(load_packages "${ROOT_DIR}/profiles/packages.common") $(load_packages "${ROOT_DIR}/profiles/${PACKAGES_PROFILE}")"
 BUILD_LOG="${WORK_DIR}/build.log"
 SKIPPED_PACKAGES=""
+IMM_PACKAGES=""
 MAX_SKIP_ROUNDS=5
 MAX_BUILD_RETRIES=2
 MAX_FETCH_ROUNDS=3
@@ -230,12 +234,13 @@ while :; do
 
     missing="$(missing_packages_from_log "$BUILD_LOG" | sort -u)"
 
-    # 兜底: 缺失包尝试从 ImmortalWrt 直接下载注入本地受信仓库
+    # 兜底: 缺失包从 ImmortalWrt 目录列表定位并注入本地受信仓库
     if [ -n "$missing" ] && [ "$fetch_round" -lt "$MAX_FETCH_ROUNDS" ]; then
         fetched_any=0
         for pkg in $missing; do
             if imm_fetch_pkg "$pkg"; then
                 fetched_any=1
+                IMM_PACKAGES="${IMM_PACKAGES}${IMM_PACKAGES:+ }${pkg}"
             fi
         done
         if [ "$fetched_any" -eq 1 ]; then
@@ -279,13 +284,12 @@ done
 for kfile in "${IMM_KEYS_DIR}"/*.pub "${IMM_KEYS_DIR}"/*.pem; do
     [ -e "$kfile" ] || continue
     cp -af "$kfile" "${OVERLAY_DIR}/etc/apk/keys/"
+    log "Installed ImmortalWrt signing key into firmware: $(basename "$kfile")"
 done
-if [ -s "${IMM_INDEX_CACHE}/luci.adb" ] || [ -s "${IMM_INDEX_CACHE}/packages.adb" ]; then
+if [ -n "$IMM_PACKAGES" ]; then
     : > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
     for feed in $IMMORTALWRT_FEEDS; do
-        if [ -s "${IMM_INDEX_CACHE}/${feed}.adb" ]; then
-            echo "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" >> "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
-        fi
+        echo "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" >> "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
     done
 fi
 
