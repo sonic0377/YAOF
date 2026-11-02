@@ -84,7 +84,10 @@ CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${AR
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
-IMMORTALWRT_FEED_URL="${IMMORTALWRT_FEED_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/}"
+# 修正：ImmortalWrt 的包存放在 packages/${ARCH}/packages 和 packages/${ARCH}/luci 等子目录中
+# 必须去掉末尾斜杠，并指定具体的分类目录，否则 apk 会错误地拼接架构名
+IMMORTALWRT_PACKAGES_URL="${IMMORTALWRT_PACKAGES_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/packages}"
+IMMORTALWRT_LUCI_URL="${IMMORTALWRT_LUCI_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/luci}"
 IMMORTALWRT_KEY_URL="${IMMORTALWRT_KEY_URL:-https://raw.githubusercontent.com/immortalwrt/keyring/master/immortalwrt.pub}"
 # =============================================================================
 
@@ -119,8 +122,12 @@ fi
 log "Fetching ImmortalWrt feed signing key: ${IMMORTALWRT_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$IMMORTALWRT_KEY_URL" -o "${IB_DIR}/keys/immortalwrt.pub" || log "WARNING: Failed to download ImmortalWrt signing key"
 
-if ! grep -qxF "$IMMORTALWRT_FEED_URL" "${IB_DIR}/repositories"; then
-    sed -i "1i ${IMMORTALWRT_FEED_URL}" "${IB_DIR}/repositories"
+# 插入 ImmortalWrt 的 packages 和 luci 源 (去掉末尾斜杠，防止 apk 错误拼接路径)
+if ! grep -qxF "$IMMORTALWRT_PACKAGES_URL" "${IB_DIR}/repositories"; then
+    sed -i "1i ${IMMORTALWRT_PACKAGES_URL}" "${IB_DIR}/repositories"
+fi
+if ! grep -qxF "$IMMORTALWRT_LUCI_URL" "${IB_DIR}/repositories"; then
+    sed -i "1i ${IMMORTALWRT_LUCI_URL}" "${IB_DIR}/repositories"
 fi
 
 # -----------------------------------------------------------------------------
@@ -148,7 +155,12 @@ fi
 
 mkdir -p "${OVERLAY_DIR}/etc/apk/repositories.d"
 echo "$CUSTOM_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/customfeeds.list"
-echo "$IMMORTALWRT_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
+
+# 为最终固件配置 ImmortalWrt 源
+cat > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list" <<EOF
+${IMMORTALWRT_PACKAGES_URL}
+${IMMORTALWRT_LUCI_URL}
+EOF
 
 if [ "$TARGET" = "rockchip" ]; then
     mkdir -p "${OVERLAY_DIR}/etc/apk"
