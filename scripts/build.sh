@@ -79,15 +79,15 @@ esac
 
 # =============================================================================
 # 定义软件源与工具 URL (支持通过环境变量覆盖)
+# 注意: repositories 文件仅接受"纯 URL"或"完整索引文件 URL",
+#       严禁使用 src/gz 前缀 (apk 会拒绝读取整个文件)
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
-# ImmortalWrt 源 (注意：由于 apk 架构追加行为，这些源可能无法在 IB 阶段正常工作)
-# 我们仍将其加入 repositories 文件，但主要依赖 Overlay 配置供设备使用
-IMMORTALWRT_PACKAGES_URL="${IMMORTALWRT_PACKAGES_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/packages}"
-IMMORTALWRT_LUCI_URL="${IMMORTALWRT_LUCI_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}/luci}"
+IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
+IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-packages luci}"
 IMMORTALWRT_KEY_URL="${IMMORTALWRT_KEY_URL:-https://raw.githubusercontent.com/immortalwrt/keyring/master/immortalwrt.pub}"
 # =============================================================================
 
@@ -108,6 +108,34 @@ if [ ! -d "$IB_DIR" ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# 探测 ImmortalWrt 索引文件的真实位置, 返回完整索引 URL (与 QiuSimons 源同一模式)
+# apk 25.12 对"完整索引文件 URL"直接下载, 不做任何架构路径拼接
+# -----------------------------------------------------------------------------
+probe_immortalwrt_index() {
+    local feed="$1"
+    local candidate
+    for candidate in \
+        "${IMMORTALWRT_BASE_URL}/${feed}/packages.adb" \
+        "${IMMORTALWRT_BASE_URL}/${feed}/APKINDEX.tar.gz"; do
+        if curl -fsSL --retry 2 --retry-delay 1 -o /dev/null "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+IMMORTALWRT_REPO_URLS=""
+for feed in $IMMORTALWRT_FEEDS; do
+    if idx_url="$(probe_immortalwrt_index "$feed")"; then
+        log "ImmortalWrt feed '${feed}' resolved to index: ${idx_url}"
+        IMMORTALWRT_REPO_URLS="${IMMORTALWRT_REPO_URLS}${IMMORTALWRT_REPO_URLS:+ }${idx_url}"
+    else
+        log "WARNING: ImmortalWrt feed '${feed}' index not found under ${IMMORTALWRT_BASE_URL}/${feed}/ ; skipping this feed"
+    fi
+done
+
+# -----------------------------------------------------------------------------
 # 配置 ImageBuilder 的软件源与密钥
 # -----------------------------------------------------------------------------
 mkdir -p "${IB_DIR}/keys"
@@ -115,26 +143,19 @@ mkdir -p "${IB_DIR}/keys"
 log "Fetching custom feed signing key: ${CUSTOM_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CUSTOM_KEY_URL" -o "${IB_DIR}/keys/custom-feed.rsa.pub" || die "Failed to download custom feed signing key"
 
-# 使用 src/gz 格式插入自定义源，确保兼容性
-CUSTOM_REPO_LINE="src/gz custom_feed ${CUSTOM_FEED_URL}"
-if ! grep -qxF "$CUSTOM_REPO_LINE" "${IB_DIR}/repositories"; then
-    sed -i "1i ${CUSTOM_REPO_LINE}" "${IB_DIR}/repositories"
+if ! grep -qxF "$CUSTOM_FEED_URL" "${IB_DIR}/repositories"; then
+    sed -i "1i ${CUSTOM_FEED_URL}" "${IB_DIR}/repositories"
 fi
 
 log "Fetching ImmortalWrt feed signing key: ${IMMORTALWRT_KEY_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$IMMORTALWRT_KEY_URL" -o "${IB_DIR}/keys/immortalwrt.pub" || log "WARNING: Failed to download ImmortalWrt signing key"
 
-# 尝试使用 src/gz 格式插入 ImmortalWrt 源
-# 注意：由于 apk 架构追加行为，这可能在 IB 阶段失败，但我们会继续
-IMM_PACKAGES_REPO="src/gz immortalwrt_packages ${IMMORTALWRT_PACKAGES_URL}"
-IMM_LUCI_REPO="src/gz immortalwrt_luci ${IMMORTALWRT_LUCI_URL}"
-
-if ! grep -qxF "$IMM_PACKAGES_REPO" "${IB_DIR}/repositories"; then
-    sed -i "1i ${IMM_PACKAGES_REPO}" "${IB_DIR}/repositories"
-fi
-if ! grep -qxF "$IMM_LUCI_REPO" "${IB_DIR}/repositories"; then
-    sed -i "1i ${IMM_LUCI_REPO}" "${IB_DIR}/repositories"
-fi
+# 仅写入探测成功的完整索引 URL (纯文本行, 无 src/gz, 无尾部斜杠)
+for repo_url in $IMMORTALWRT_REPO_URLS; do
+    if ! grep -qxF "$repo_url" "${IB_DIR}/repositories"; then
+        sed -i "1i ${repo_url}" "${IB_DIR}/repositories"
+    fi
+done
 
 # -----------------------------------------------------------------------------
 # 配置目标固件的 Overlay 目录
@@ -152,7 +173,6 @@ log "Fetching cleanup utility: ${CLEANUP_SCRIPT_URL}"
 curl -fsSL --retry 3 --retry-delay 2 "$CLEANUP_SCRIPT_URL" -o "${OVERLAY_DIR}/usr/bin/clean-overlay" || die "Failed to download cleanup utility"
 chmod +x "${OVERLAY_DIR}/usr/bin/clean-overlay"
 
-# 配置 APK 密钥和软件源列表以供最终固件使用
 mkdir -p "${OVERLAY_DIR}/etc/apk/keys"
 cp -af "${IB_DIR}/keys/custom-feed.rsa.pub" "${OVERLAY_DIR}/etc/apk/keys/"
 if [ -f "${IB_DIR}/keys/immortalwrt.pub" ]; then
@@ -162,11 +182,12 @@ fi
 mkdir -p "${OVERLAY_DIR}/etc/apk/repositories.d"
 echo "$CUSTOM_FEED_URL" > "${OVERLAY_DIR}/etc/apk/repositories.d/customfeeds.list"
 
-# 为最终固件配置 ImmortalWrt 源 (使用纯 URL 格式，不带尾部斜杠)
-cat > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list" <<EOF
-${IMMORTALWRT_PACKAGES_URL}
-${IMMORTALWRT_LUCI_URL}
-EOF
+if [ -n "$IMMORTALWRT_REPO_URLS" ]; then
+    : > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
+    for repo_url in $IMMORTALWRT_REPO_URLS; do
+        echo "$repo_url" >> "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
+    done
+fi
 
 if [ "$TARGET" = "rockchip" ]; then
     mkdir -p "${OVERLAY_DIR}/etc/apk"
