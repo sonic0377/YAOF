@@ -20,6 +20,7 @@
 
 ### 特性
 
+- Fork by QiuSimons大佬的YAOF项目，感谢QiuSimons大佬！！
 - 基于 OpenWrt 官方 ImageBuilder 与 [OpenWrt-Add](https://github.com/QiuSimons/OpenWrt-Add) 预编译 APK 签名源组装，默认管理地址 192.168.1.1
 - 纯 JS 现代 LuCI 界面，彻底淘汰老旧 Lua CBI 与 luci-compat
 - 首次开机动态初始化中文环境、国内 NTP、国内软件源镜像及 Aurora 现代主题
