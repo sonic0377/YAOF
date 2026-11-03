@@ -69,6 +69,9 @@ zram-swap
 luci-app-filemanager
 luci-app-partexp
 luci-app-wechatpush
+vlmcsd
+luci-app-vlmcsd
+luci-i18n-vlmcsd-zh-cn
 
 # USB Tethering
 kmod-usb-net-rndis
