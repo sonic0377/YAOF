@@ -82,15 +82,16 @@ esac
 # 设计原则:
 #   1) 构建期 repositories 仅含官方源 + QiuSimons 受信源 (避免优先级劫持);
 #   2) ImmortalWrt 仅作兜底: 受信源缺失时, 通过 HTTP 目录列表定位 .apk
-#      并注入 ImageBuilder 本地受信包目录 (不解析索引, 不依赖签名信任链);
-#   3) 所有失败分支均输出日志, 杜绝静默失败。
+#      并注入 ImageBuilder 本地受信包目录;
+#   3) 通过浅克隆 keyring 仓库获取 ImmortalWrt 公钥, 写入固件供设备端信任校验。
 # =============================================================================
 CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${ARCH}/packages.adb}"
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
-IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
+IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/snapshots/packages/${ARCH}}"
 IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-luci packages}"
+KEYRING_GIT="${KEYRING_GIT:-https://github.com/immortalwrt/keyring.git}"
 # =============================================================================
 
 WORK_DIR="${ROOT_DIR}/build_${TARGET}_${SUBTARGET}_${PROFILE}"
@@ -127,6 +128,28 @@ fi
 IMM_KEYS_DIR="${WORK_DIR}/imm-keys"
 mkdir -p "$IMM_KEYS_DIR"
 
+# --- 浅克隆官方 keyring 仓库获取全部 APK 公钥 (不受 GitHub API 限流影响) ---
+log "Fetching ImmortalWrt signing keys from official keyring repository (git clone)..."
+KEYRING_DIR="${WORK_DIR}/immortalwrt-keyring"
+rm -rf "$KEYRING_DIR"
+if git clone --depth 1 --quiet "$KEYRING_GIT" "$KEYRING_DIR" 2>/dev/null; then
+    key_count=0
+    for keyfile in "${KEYRING_DIR}/apk/"*.pub; do
+        [ -e "$keyfile" ] || continue
+        cp -f "$keyfile" "${IMM_KEYS_DIR}/$(basename "$keyfile")"
+        key_count=$((key_count + 1))
+    done
+    rm -rf "$KEYRING_DIR"
+    if [ "$key_count" -gt 0 ]; then
+        log "Installed ${key_count} ImmortalWrt signing key(s) from keyring repository"
+    else
+        log "WARNING: No .pub keys found under apk/ in keyring repository"
+    fi
+else
+    log "WARNING: Failed to clone ImmortalWrt keyring repository; falling back to .apk signature extraction only"
+fi
+
+# 兜底: 从注入的 .apk 签名成员中提取公钥 (若 keyring 克隆失败仍有机会获得密钥)
 imm_extract_keys() {
     local apkfile="$1"
     local member
@@ -280,12 +303,14 @@ while :; do
     PACKAGES="$kept"
 done
 
-# 将提取到的 ImmortalWrt 签名公钥与源列表写入固件 (设备端可信任并更新该源)
+# 将 ImmortalWrt 签名公钥写入固件 (keyring 克隆为主, .apk 签名提取为兜底)
 for kfile in "${IMM_KEYS_DIR}"/*.pub "${IMM_KEYS_DIR}"/*.pem; do
     [ -e "$kfile" ] || continue
     cp -af "$kfile" "${OVERLAY_DIR}/etc/apk/keys/"
     log "Installed ImmortalWrt signing key into firmware: $(basename "$kfile")"
 done
+
+# 仅在实际注入过 ImmortalWrt 包时, 向固件写入该源列表供设备端使用
 if [ -n "$IMM_PACKAGES" ]; then
     : > "${OVERLAY_DIR}/etc/apk/repositories.d/immortalwrt-feeds.list"
     for feed in $IMMORTALWRT_FEEDS; do
