@@ -31,6 +31,7 @@ luci-i18n-airconnect-zh-cn
 luci-i18n-filemanager-zh-cn
 luci-i18n-partexp-zh-cn
 luci-i18n-ddns-go-zh-cn
+luci-i18n-vlmcsd-zh-cn
 
 # Proxy & eBPF
 luci-app-homeproxy
@@ -71,7 +72,6 @@ luci-app-partexp
 luci-app-wechatpush
 vlmcsd
 luci-app-vlmcsd
-luci-i18n-vlmcsd-zh-cn
 
 # USB Tethering
 kmod-usb-net-rndis
