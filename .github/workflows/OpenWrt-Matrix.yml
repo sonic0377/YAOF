@@ -77,8 +77,8 @@ jobs:
           all_targets='[
             {"name": "X86", "target": "x86", "subtarget": "64", "profile": "generic", "packages_profile": "packages.x86_64"},
             {"name": "R2S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r2s", "packages_profile": "packages.rockchip"},
-            {"name": "R2C", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r2c", "packages_profile": "packages.rockchip"},
-            {"name": "R3S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r3s", "packages_profile": "packages.rockchip"},
+           # {"name": "R2C", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r2c", "packages_profile": "packages.rockchip"},
+           # {"name": "R3S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r3s", "packages_profile": "packages.rockchip"},
             {"name": "R4S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r4s", "packages_profile": "packages.rockchip"}
           ]'
 
