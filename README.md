@@ -42,7 +42,7 @@
 
 ### 固件下载
 
-- 选择自己设备对应的固件下载：[Releases](https://github.com/QiuSimons/YAOF/releases)
+- 选择自己设备对应的固件下载：[Releases](https://github.com/sonic0377/YAOF/releases)
 
 ### 鸣谢
 
