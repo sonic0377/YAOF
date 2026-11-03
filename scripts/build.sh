@@ -89,7 +89,7 @@ CUSTOM_FEED_URL="${CUSTOM_FEED_URL:-https://qiusimons.github.io/OpenWrt-Add/${AR
 CUSTOM_KEY_URL="${CUSTOM_KEY_URL:-https://qiusimons.github.io/OpenWrt-Add/keys/custom-feed.rsa.pub}"
 CLEANUP_SCRIPT_URL="${CLEANUP_SCRIPT_URL:-https://raw.githubusercontent.com/QiuSimons/OpenWrt-Add/master/core/tools/clean-overlay.sh}"
 
-IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/${ARCH}}"
+IMMORTALWRT_BASE_URL="${IMMORTALWRT_BASE_URL:-https://downloads.immortalwrt.org/releases/snapshots/packages/${ARCH}}"
 IMMORTALWRT_FEEDS="${IMMORTALWRT_FEEDS:-luci packages}"
 KEYRING_GIT="${KEYRING_GIT:-https://github.com/immortalwrt/keyring.git}"
 # =============================================================================
