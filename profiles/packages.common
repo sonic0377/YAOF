@@ -35,7 +35,7 @@ luci-i18n-vlmcsd-zh-cn
 
 # Proxy & eBPF
 luci-app-homeproxy
-luci-app-nikki
+localclash-luci
 luci-app-honk
 luci-app-dae
 vmlinux-btf
