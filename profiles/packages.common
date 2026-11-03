@@ -41,6 +41,7 @@ vmlinux-btf
 luci-app-flowcone
 luci-app-openclash
 luci-app-mosdns
+localclash-luci
 
 # Network & Routing
 luci-app-sqm
