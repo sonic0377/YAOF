@@ -1,1 +1,143 @@
 
+name: OpenWrt-Matrix
+
+on:
+  workflow_call:
+    inputs:
+      targets:
+        required: false
+        type: string
+        default: ""
+      version:
+        required: false
+        type: string
+        default: "latest"
+
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Select target platforms (comma separated, e.g. X86,R2S,R4S ;leave blank for all)"
+        required: false
+        type: string
+        default: ""
+      version:
+        description: "OpenWrt version (e.g. 25.12.6 or leave blank for latest 25.x)"
+        required: false
+        type: string
+        default: "latest"
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    name: Setup Build Matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      version: ${{ steps.resolve-ver.outputs.version }}
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v6
+
+      - name: Resolve OpenWrt Version
+        id: resolve-ver
+        shell: bash
+        run: |
+          req="${{ inputs.version }}"
+          default_major="25.12"
+          [ -n "$req" ] && [ "$req" != "latest" ] || req="$default_major"
+
+          versions=$(curl -fsSL --retry 3 https://downloads.openwrt.org/releases/ 2>/dev/null | \
+            grep -oE 'href="[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?/"' | \
+            sed 's/href="//;s/\///;s/"//' | sort -V || true)
+
+          if [ -z "$versions" ]; then
+            versions=$(git ls-remote --tags --refs https://github.com/openwrt/openwrt.git 2>/dev/null | awk -F'/' '{print $NF}' | sed 's/^v//' || true)
+          fi
+
+          resolved=""
+          if echo "$versions" | grep -qx "$req"; then
+            resolved="$req"
+          else
+            escaped_req="${req//./\\.}"
+            resolved=$(echo "$versions" | grep -E "^${escaped_req}\.[0-9]+" | grep -v 'rc' | sort -V | tail -n 1 || true)
+            if [ -z "$resolved" ]; then
+              resolved=$(echo "$versions" | grep -E "^${escaped_req}" | grep -v 'rc' | sort -V | tail -n 1 || true)
+            fi
+          fi
+
+          [ -n "$resolved" ] || resolved="${req:-25.12.6}"
+          echo "Resolved OpenWrt version: ${resolved}"
+          echo "version=${resolved}" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate Target Matrix
+        id: set-matrix
+        shell: bash
+        run: |
+          all_targets='[
+            {"name": "X86", "target": "x86", "subtarget": "64", "profile": "generic", "packages_profile": "packages.x86_64"},
+            {"name": "R2S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r2s", "packages_profile": "packages.rockchip"},
+            {"name": "R4S", "target": "rockchip", "subtarget": "armv8", "profile": "friendlyarm_nanopi-r4s", "packages_profile": "packages.rockchip"}
+          ]'
+
+          inputs_targets="${{ inputs.targets }}"
+          inputs_targets=$(echo "$inputs_targets" | sed 's/，/,/g' | tr 'a-z' 'A-Z' | xargs)
+
+          if [ -z "$inputs_targets" ]; then
+            echo "matrix=$(echo "$all_targets" | jq -c '{include: .}')" >> "$GITHUB_OUTPUT"
+          else
+            filtered=$(echo "$all_targets" | jq --arg targets "$inputs_targets" '[.[] | select(.name as $name | ($targets | split(",") | map(gsub(" "; "")) | index($name))) ]')
+            echo "matrix=$(echo "$filtered" | jq -c '{include: .}')" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.name }} (OpenWrt ${{ needs.setup.outputs.version }})
+    needs: setup
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v6
+
+      - name: Install Host Dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential zstd curl wget jq file rsync \
+            libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc
+
+      - name: Assemble Firmware via ImageBuilder
+        shell: bash
+        run: |
+          chmod +x ./scripts/build.sh
+          ./scripts/build.sh \
+            "${{ matrix.target }}" \
+            "${{ matrix.subtarget }}" \
+            "${{ matrix.profile }}" \
+            "${{ matrix.packages_profile }}" \
+            "${{ needs.setup.outputs.version }}"
+
+      - name: Upload Artifacts to Job
+        uses: actions/upload-artifact@v6
+        with:
+          name: YAOF-${{ matrix.name }}-${{ needs.setup.outputs.version }}
+          path: artifact/*.img.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: ncipollo/release-action@v1
+        with:
+          name: YAOF-OpenWrt-${{ needs.setup.outputs.version }}
+          tag: ${{ needs.setup.outputs.version }}
+          commit: ${{ github.sha }}
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: artifact/*.img.gz
