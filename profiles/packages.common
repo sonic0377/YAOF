@@ -27,6 +27,8 @@ luci-i18n-3cat-zh-cn
 luci-i18n-airconnect-zh-cn
 luci-i18n-filemanager-zh-cn
 luci-i18n-partexp-zh-cn
+luci-i18n-ddns-go-zh-cn
+luci-i18n-vlmcsd-zh-cn
 
 # Proxy & eBPF
 luci-app-homeproxy
@@ -35,6 +37,7 @@ luci-app-honk
 luci-app-dae
 vmlinux-btf
 luci-app-flowcone
+luci-app-openclash
 
 # Network & Routing
 luci-app-sqm
@@ -52,6 +55,8 @@ ddns-scripts-cloudflare
 luci-app-upnp
 luci-app-3cat
 luci-app-airconnect
+ddns-go
+luci-app-ddns-go
 
 # System & Filesystem
 ethtool
@@ -60,6 +65,8 @@ kmod-tcp-bbr3
 zram-swap
 luci-app-filemanager
 luci-app-partexp
+vlmcsd
+luci-app-vlmcsd
 
 # USB Tethering
 kmod-usb-net-rndis
