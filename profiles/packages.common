@@ -1,20 +1,17 @@
 # UI
 luci
-luci-mod-dashboard
-luci-theme-aurora
-luci-theme-argon
-luci-theme-graphite
-luci-theme-footstrap
-addition-trans-zh
+luci-theme-vantage
+luci-app-vantage
+system-addon
 
 # Translations
 luci-i18n-base-zh-cn
-luci-i18n-dashboard-zh-cn
 luci-i18n-firewall-zh-cn
 luci-i18n-package-manager-zh-cn
-luci-i18n-argon-config-zh-cn
-luci-i18n-graphite-zh-cn
+luci-i18n-vantage-zh-cn
+luci-i18n-vantage-theme-zh-cn
 luci-i18n-homeproxy-zh-cn
+luci-i18n-nikki-zh-cn
 luci-i18n-honk-zh-cn
 luci-i18n-dae-zh-cn
 luci-i18n-flowcone-zh-cn
@@ -24,23 +21,20 @@ luci-i18n-bandix-zh-cn
 luci-i18n-arpbind-zh-cn
 luci-i18n-ap-modem-zh-cn
 luci-i18n-zerotier-zh-cn
+luci-i18n-ddns-zh-cn
 luci-i18n-upnp-zh-cn
 luci-i18n-3cat-zh-cn
 luci-i18n-airconnect-zh-cn
 luci-i18n-filemanager-zh-cn
 luci-i18n-partexp-zh-cn
-luci-i18n-ddns-go-zh-cn
-luci-i18n-vlmcsd-zh-cn
 
 # Proxy & eBPF
 luci-app-homeproxy
-luci-app-localclash
+luci-app-nikki
 luci-app-honk
 luci-app-dae
 vmlinux-btf
 luci-app-flowcone
-luci-app-openclash
-luci-app-mosdns
 
 # Network & Routing
 luci-app-sqm
@@ -48,28 +42,24 @@ luci-app-natmapt
 luci-app-bandix
 luci-app-arpbind
 luci-app-ap-modem
-luci-app-wrtbwmon
 
 # VPN & Services
 luci-proto-wireguard
 qrencode
 luci-app-zerotier
+luci-app-ddns
+ddns-scripts-cloudflare
 luci-app-upnp
 luci-app-3cat
 luci-app-airconnect
-ddns-go
-luci-app-ddns-go
 
 # System & Filesystem
 ethtool
 kmod-fs-f2fs
-kmod-tcp-bbr
+kmod-tcp-bbr3
 zram-swap
 luci-app-filemanager
 luci-app-partexp
-luci-app-wechatpush
-vlmcsd
-luci-app-vlmcsd
 
 # USB Tethering
 kmod-usb-net-rndis
