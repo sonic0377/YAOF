@@ -55,6 +55,7 @@ luci-app-upnp
 luci-app-3cat
 luci-app-airconnect
 luci-app-openclash
+localclash-luci
 
 # System & Filesystem
 ethtool
