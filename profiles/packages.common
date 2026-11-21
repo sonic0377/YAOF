@@ -44,6 +44,7 @@ luci-app-arpbind
 luci-app-ap-modem
 ddns-go
 luci-app-ddns-go
+luci-app-mosdns
 
 # VPN & Services
 luci-proto-wireguard
